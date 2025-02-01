@@ -7,17 +7,14 @@ from urllib.parse import urlparse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_links(domain_url, driver, url_accept = lambda x: True):
+def get_links(domain_url, driver, url_accept = lambda _: True):
     """
     Extract all unique links from the given domain.
-
-    This function uses a WebDriver instance to visit the specified domain URL,
-    extracts all anchor (<a>) elements, and retrieves their "href" attributes.
-    It ensures that each link is only visited once to avoid redundant requests.
 
     Args:
         domain_url (str): The starting URL of the domain to extract links from.
         driver (WebDriver): Selenium WebDriver instance used for web navigation.
+        url_accept (callable, optional): A callback for accepting urls
 
     Yields:
         str: Extracted URLs from the domain.
