@@ -32,7 +32,7 @@ def install_chrome():
         os.remove("google-chrome-stable_current_amd64.deb")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error installing Chrome: {str(e)}")
+        logger.warning(f"Error installing Chrome: {str(e)}")
         return False
 
 def setup_chrome_driver():
@@ -94,5 +94,5 @@ def wait_for_js_load(driver, timeout=10):
         
         return True
     except TimeoutException:
-        print(f"Timeout waiting for JavaScript to load after {timeout} seconds")
+        logger.warning(f"Timeout waiting for JavaScript to load after {timeout} seconds")
         return False

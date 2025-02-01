@@ -15,7 +15,7 @@ def get_disallowed_urls(robots_url):
     response = requests.get(robots_url)
     
     if response.status_code != 200:
-        print("Invalid response when querying for robots.txt from: ", robots_url)
+        logger.warning("Invalid response when querying for robots.txt from: ", robots_url)
         return []  # No file? skill issue, I crawl everything
     
     rp.parse(response.text.splitlines())
@@ -46,6 +46,7 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
     """
     robots_path = domain_url.replace("/en", "") + "/robots.txt"
     disallowed_urls = get_disallowed_urls(robots_path)
+    logger.info("Dissalowed urls: " + str(disallowed_urls))
 
     if domain_url in disallowed_urls:
         return ""
@@ -86,7 +87,7 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
 if __name__ == "__main__":
     try:
         driver = setup_chrome_driver()
-        domain_url = "https://accesimobil.md/"
+        domain_url = "https://fcim.utm.md/"
         base_domain = urlparse(domain_url).netloc
         logger.info(f"Base domain: {base_domain}")
 
