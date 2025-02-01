@@ -1,6 +1,7 @@
 import logging
 from chrome_driver import setup_chrome_driver
 from crawler import get_links
+from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -8,13 +9,21 @@ logger = logging.getLogger(__name__)
 def main():
     try:
         driver = setup_chrome_driver()
-        
-        for link in get_links("https://accesimobil.md", driver):
-            print(link)
-        
-        driver.quit()
+        domain_url = "https://accesimobil.md/"
+        base_domain = urlparse(domain_url).netloc
+        logger.info(f"Base domain: {base_domain}")
+
+        def url_accept_strategy(href):
+            if urlparse(href).netloc != base_domain:
+                logger.info(f"Not domain url: {href}")
+                return False
+            return True
+
+        for link in get_links(domain_url, driver, url_accept_strategy):
+            print(f"Found link: {link}")
         
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        logger.error(f"An error occurred: {str(e)}")
+    finally:
         if 'driver' in locals():
             driver.quit()

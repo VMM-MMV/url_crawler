@@ -1,21 +1,26 @@
 from selenium.webdriver.common.by import By
-from chrome_driver import setup_chrome_driver
-from chrome_driver import wait_for_js_load
+from chrome_driver import setup_chrome_driver, wait_for_js_load
 import logging
 from collections import deque
+from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_links(domain_url, driver):
+def get_links(domain_url, driver, url_accept = lambda x: True):
     """
-    Extract all links from a page
-    
+    Extract all unique links from the given domain.
+
+    This function uses a WebDriver instance to visit the specified domain URL,
+    extracts all anchor (<a>) elements, and retrieves their "href" attributes.
+    It ensures that each link is only visited once to avoid redundant requests.
+
     Args:
-        driver: WebDriver instance
-    
-    Returns:
-        list: List of dictionaries containing link text and href
+        domain_url (str): The starting URL of the domain to extract links from.
+        driver (WebDriver): Selenium WebDriver instance used for web navigation.
+
+    Yields:
+        str: Extracted URLs from the domain.
     """
 
     visited = set()
@@ -24,36 +29,51 @@ def get_links(domain_url, driver):
     while url_dq:
         for _ in range(len(url_dq)):
             url_node = url_dq.popleft()
-            if url_node in visited:
-                continue
             
-            yield url_node
-            driver.get(domain_url)
+            try:
+                driver.get(url_node)
+            except:
+                continue
     
             if not wait_for_js_load(driver):
                 logger.warning("Timeout for page: ", url_node)
                 continue
 
-            # Find all <a> elements
             elements = driver.find_elements(By.TAG_NAME, "a")
             
             for element in elements:
                 try:
-                    url_dq.append(element.get_attribute("href"))
+                    href = element.get_attribute("href")
+                    if not href: continue
+                    if href in visited: continue
+                    visited.add(href)
+                    
+                    if not url_accept(href): continue
+                    url_dq.append(href)
+
+                    yield href
                 except Exception as e:
-                    print(f"Error extracting link: {str(e)}")
+                    logger.warning(f"Error extracting link: {str(e)}")
                     continue
 
 if __name__ == "__main__":
     try:
         driver = setup_chrome_driver()
-        
-        for link in get_links("https://accesimobil.md", driver):
-            print(link)
-        
-        driver.quit()
+        domain_url = "https://accesimobil.md/"
+        base_domain = urlparse(domain_url).netloc
+        logger.info(f"Base domain: {base_domain}")
+
+        def url_accept_strategy(href):
+            if urlparse(href).netloc != base_domain:
+                logger.info(f"Not domain url: {href}")
+                return False
+            return True
+
+        for link in get_links(domain_url, driver, url_accept_strategy):
+            print(f"Found link: {link}")
         
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        logger.error(f"An error occurred: {str(e)}")
+    finally:
         if 'driver' in locals():
             driver.quit()
