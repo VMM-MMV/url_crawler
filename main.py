@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 def main():
     try:
         driver = setup_chrome_driver()
-        domain_url = "https://accesimobil.md/"
+        
+        domain_url = "https://www.youtube.com/"
         base_domain = urlparse(domain_url).netloc
         logger.info(f"Base domain: {base_domain}")
 
@@ -27,3 +28,6 @@ def main():
     finally:
         if 'driver' in locals():
             driver.quit()
+
+if __name__ == "__main__":
+    main()

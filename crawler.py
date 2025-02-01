@@ -3,9 +3,34 @@ from chrome_driver import setup_chrome_driver, wait_for_js_load
 import logging
 from collections import deque
 from urllib.parse import urlparse
+import urllib.robotparser
+import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_disallowed_urls(robots_url):
+    rp = urllib.robotparser.RobotFileParser()
+    
+    response = requests.get(robots_url)
+    
+    if response.status_code != 200:
+        print("Invalid response when querying for robots.txt from: ", robots_url)
+        return []  # No file? skill issue, I crawl everything
+    
+    rp.parse(response.text.splitlines())
+    
+    disallowed_urls = [] 
+    
+    for path in rp.entries:
+        if path.useragent != '*':  # For all User-agents
+            with open("not_allowed_to_query.txt", "a") as f:
+                f.write(robots_url + "\n")
+            return [urlparse(robots_url).netloc] # return the domain since no urls are allowed
+        for entry in path.disallow:
+            disallowed_urls.append(entry)
+    
+    return disallowed_urls
 
 def get_links(domain_url, driver, url_accept = lambda _: True):
     """
@@ -19,8 +44,13 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
     Yields:
         str: Extracted URLs from the domain.
     """
+    robots_path = domain_url.replace("/en", "") + "/robots.txt"
+    disallowed_urls = get_disallowed_urls(robots_path)
 
-    visited = set()
+    if domain_url in disallowed_urls:
+        return ""
+    
+    visited = set(disallowed_urls)
     url_dq = deque([domain_url])
 
     while url_dq:
