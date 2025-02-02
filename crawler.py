@@ -44,7 +44,7 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
     Yields:
         str: Extracted URLs from the domain.
     """
-    robots_path = domain_url.replace("/en", "") + "/robots.txt"
+    robots_path = domain_url + "robots.txt"
     disallowed_urls = get_disallowed_urls(robots_path)
     logger.info("Dissalowed urls: " + str(disallowed_urls))
 
