@@ -1,5 +1,5 @@
 from selenium.webdriver.common.by import By
-from chrome_driver import setup_chrome_driver, wait_for_js_load
+from url_crawler.chrome_driver import setup_chrome_driver, wait_for_js_load
 import logging
 from collections import deque
 from urllib.parse import urlparse
@@ -68,10 +68,11 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
                 continue
 
             elements = driver.find_elements(By.TAG_NAME, "a")
+
+            hrefs = [element.get_attribute("href") for element in elements]
             
-            for element in elements:
+            for href in hrefs:
                 try:
-                    href = element.get_attribute("href")
                     if not href: continue
                     if href in visited: continue
                     visited.add(href)
