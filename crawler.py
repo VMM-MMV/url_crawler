@@ -72,18 +72,14 @@ def get_links(domain_url, driver, url_accept = lambda _: True):
             hrefs = [element.get_attribute("href") for element in elements]
             
             for href in hrefs:
-                try:
-                    if not href: continue
-                    if href in visited: continue
-                    visited.add(href)
-                    
-                    if not url_accept(href): continue
-                    url_dq.append(href)
+                if not href: continue
+                if href in visited: continue
+                visited.add(href)
+                
+                if not url_accept(href): continue
+                url_dq.append(href)
 
-                    yield href
-                except Exception as e:
-                    logger.warning(f"Error extracting link: {str(e)}")
-                    continue
+                yield href
 
 if __name__ == "__main__":
     try:
