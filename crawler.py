@@ -1,5 +1,5 @@
 from selenium.webdriver.common.by import By
-from url_crawler.chrome_driver import setup_chrome_driver, wait_for_js_load
+from chrome_driver import setup_chrome_driver, wait_for_js_load
 import logging
 from collections import deque
 from urllib.parse import urlparse
