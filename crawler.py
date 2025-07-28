@@ -1,105 +1,202 @@
-from selenium.webdriver.common.by import By
-from chrome_driver import setup_chrome_driver, wait_for_js_load
+import asyncio
 import logging
 from collections import deque
 from urllib.parse import urlparse
 import urllib.robotparser
 import requests
+from playwright.async_api import async_playwright
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_disallowed_urls(robots_url):
+    """Parse robots.txt and return disallowed URLs."""
     rp = urllib.robotparser.RobotFileParser()
     
-    response = requests.get(robots_url)
+    try:
+        response = requests.get(robots_url, timeout=10)
+        
+        if response.status_code != 200:
+            logger.warning(f"Invalid response when querying for robots.txt from: {robots_url}")
+            return []  # No file? Allow crawling everything
+        
+        rp.parse(response.text.splitlines())
+        
+        disallowed_urls = [] 
+        
+        for entry in rp.entries:
+            if entry.useragent != '*':  # For all User-agents
+                with open("not_allowed_to_query.txt", "a") as f:
+                    f.write(robots_url + "\n")
+                domain_name = urlparse(robots_url).netloc
+                return [domain_name]  # Return the domain since no URLs are allowed
+            
+            for disallow_path in entry.disallow:
+                disallowed_urls.append(disallow_path)
+        
+        return disallowed_urls
     
-    if response.status_code != 200:
-        logger.warning("Invalid response when querying for robots.txt from: ", robots_url)
-        return []  # No file? skill issue, I crawl everything
-    
-    rp.parse(response.text.splitlines())
-    
-    disallowed_urls = [] 
-    
-    for path in rp.entries:
-        if path.useragent != '*':  # For all User-agents
-            with open("not_allowed_to_query.txt", "a") as f:
-                f.write(robots_url + "\n")
-            return [urlparse(robots_url).netloc] # return the domain since no urls are allowed
-        for entry in path.disallow:
-            disallowed_urls.append(entry)
-    
-    return disallowed_urls
+    except Exception as e:
+        logger.warning(f"Error parsing robots.txt from {robots_url}: {e}")
+        return []
 
-def get_links(domain_url, driver, url_accept = lambda _: True):
+async def setup_playwright_browser():
+    """Set up Playwright browser with optimal settings for web scraping."""
+    playwright = await async_playwright().start()
+    
+    # Launch browser with headless mode and optimized settings
+    browser = await playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--disable-gpu',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor'
+        ]
+    )
+    
+    # Create context with reasonable settings
+    context = await browser.new_context(
+        viewport={'width': 1920, 'height': 1080},
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    )
+    
+    return playwright, browser, context
+
+async def wait_for_page_load(page, timeout=10000):
+    """Wait for page to fully load including JavaScript and network requests."""
+    try:
+        # Wait for the page to load
+        await page.wait_for_load_state('networkidle', timeout=timeout)
+        
+        # Additional check for document ready state
+        await page.wait_for_function('document.readyState === "complete"', timeout=timeout)
+        
+        # Wait for any jQuery AJAX calls to complete if jQuery is present
+        try:
+            await page.wait_for_function(
+                'typeof jQuery === "undefined" || jQuery.active === 0',
+                timeout=5000
+            )
+        except:
+            pass  # jQuery might not be present, which is fine
+        
+        return True
+    except Exception as e:
+        logger.warning(f"Timeout waiting for page to load: {e}")
+        return False
+
+async def get_links(domain_url, url_accept=lambda _: True):
     """
-    Extract all unique links from the given domain.
+    Extract all unique links from the given domain using Playwright.
 
     Args:
         domain_url (str): The starting URL of the domain to extract links from.
-        driver (WebDriver): Selenium WebDriver instance used for web navigation.
-        url_accept (callable, optional): A callback for accepting urls
+        url_accept (callable, optional): A callback for accepting URLs
 
     Yields:
         str: Extracted URLs from the domain.
     """
-    if domain_url[-1] != "/": domain_url += "/"
+    if domain_url[-1] != "/":
+        domain_url += "/"
+    
     robots_path = domain_url + "robots.txt"
     disallowed_urls = get_disallowed_urls(robots_path)
-    logger.info("Dissalowed urls: " + str(disallowed_urls))
+    logger.info(f"Disallowed URLs: {disallowed_urls}")
 
     if domain_url in disallowed_urls:
-        return ""
+        logger.info("Domain URL is disallowed by robots.txt")
+        return
+
+    playwright, browser, context = await setup_playwright_browser()
+    page = await context.new_page()
     
-    visited = set(disallowed_urls)
-    url_dq = deque([domain_url])
+    try:
+        visited = set(disallowed_urls)
+        url_dq = deque([domain_url])
 
-    while url_dq:
-        for _ in range(len(url_dq)):
-            url_node = url_dq.popleft()
+        while url_dq:
+            current_batch_size = len(url_dq)
             
-            try:
-                driver.get(url_node)
-            except:
-                continue
-    
-            if not wait_for_js_load(driver):
-                logger.warning("Timeout for page: ", url_node)
-                continue
-
-            elements = driver.find_elements(By.TAG_NAME, "a")
-
-            hrefs = [element.get_attribute("href") for element in elements]
-            
-            for href in hrefs:
-                if not href: continue
-                if href in visited: continue
-                visited.add(href)
+            for _ in range(current_batch_size):
+                url_node = url_dq.popleft()
                 
-                if not url_accept(href): continue
-                url_dq.append(href)
+                try:
+                    logger.info(f"Visiting: {url_node}")
+                    
+                    # Navigate to the page
+                    response = await page.goto(url_node, timeout=30000)
+                    
+                    if not response or response.status >= 400:
+                        logger.warning(f"Failed to load page: {url_node} (Status: {response.status if response else 'No response'})")
+                        continue
+                    
+                    # Wait for page to fully load
+                    if not await wait_for_page_load(page):
+                        logger.warning(f"Timeout for page: {url_node}")
+                        continue
 
-                yield href
+                    # Extract all href attributes from anchor tags
+                    hrefs = await page.evaluate('''
+                        () => {
+                            const links = Array.from(document.querySelectorAll('a[href]'));
+                            return links.map(link => link.href).filter(href => href && href.trim());
+                        }
+                    ''')
+                    
+                    logger.info(f"Found {len(hrefs)} links on {url_node}")
+                    
+                    for href in hrefs:
+                        if not href or href in visited:
+                            continue
+                        
+                        visited.add(href)
+                        
+                        if not url_accept(href):
+                            continue
+                        
+                        url_dq.append(href)
+                        yield href
+
+                except Exception as e:
+                    logger.error(f"Error processing {url_node}: {e}")
+                    continue
+    
+    finally:
+        await page.close()
+        await context.close()
+        await browser.close()
+        await playwright.stop()
 
 if __name__ == "__main__":
-    try:
-        driver = setup_chrome_driver()
-        domain_url = "https://fcim.utm.md/"
-        base_domain = urlparse(domain_url).netloc
-        logger.info(f"Base domain: {base_domain}")
+    async def main():
+        """Main function to demonstrate the web scraper."""
+        try:
+            domain_url = "https://fcim.utm.md/"
+            base_domain = urlparse(domain_url).netloc
+            logger.info(f"Base domain: {base_domain}")
 
-        def url_accept_strategy(href):
-            if urlparse(href).netloc != base_domain:
-                logger.info(f"Not domain url: {href}")
-                return False
-            return True
+            def url_accept_strategy(href):
+                parsed_href = urlparse(href)
+                if parsed_href.netloc != base_domain:
+                    logger.info(f"Not domain URL: {href}")
+                    return False
+                return True
 
-        for link in get_links(domain_url, driver, url_accept_strategy):
-            print(f"Found link: {link}")
-        
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
-    finally:
-        if 'driver' in locals():
-            driver.quit()
+            link_count = 0
+            async for link in get_links(domain_url, url_accept_strategy):
+                print(f"Found link: {link}")
+                link_count += 1
+                
+                # Optional: Add a limit to prevent infinite crawling
+                if link_count >= 100:  # Adjust as needed
+                    logger.info("Reached link limit, stopping...")
+                    break
+            
+            logger.info(f"Total links found: {link_count}")
+            
+        except Exception as e:
+            logger.error(f"An error occurred: {str(e)}")
+    
+    asyncio.run(main())
