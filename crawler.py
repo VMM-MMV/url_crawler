@@ -182,6 +182,12 @@ if __name__ == "__main__":
                 if parsed_href.netloc != base_domain:
                     logger.info(f"Not domain URL: {href}")
                     return False
+                
+                path = parsed_href.path.lower()
+                skip_extensions = {'.pdf', '.jpg', '.jpeg', '.png', '.gif', '.css', '.js', '.xml', '.ico'}
+                if any(path.endswith(ext) for ext in skip_extensions):
+                    return False
+                
                 return True
 
             link_count = 0
