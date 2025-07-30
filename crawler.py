@@ -1,10 +1,11 @@
 import asyncio
 import logging
 from collections import deque
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import urllib.robotparser
 import requests
-from playwright.async_api import async_playwright
+from page_pool import PagePool
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,68 +40,39 @@ def get_disallowed_urls(robots_url):
     except Exception as e:
         logger.warning(f"Error parsing robots.txt from {robots_url}: {e}")
         return []
-
-async def setup_playwright_browser():
-    """Set up Playwright browser with optimal settings for web scraping."""
-    playwright = await async_playwright().start()
     
-    # Launch browser with headless mode and optimized settings
-    browser = await playwright.chromium.launch(
-        headless=True,
-        args=[
-            '--disable-gpu',
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-web-security',
-            '--disable-features=VizDisplayCompositor'
-        ]
-    )
-    
-    # Create context with reasonable settings
-    context = await browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    )
-    
-    return playwright, browser, context
-
-async def wait_for_page_load(page, timeout=10000):
-    """Wait for page to fully load including JavaScript and network requests."""
+def normalize_url(url: str, base_url: str):
+    """Normalize and resolve URL relative to base URL."""
     try:
-        # Wait for the page to load
-        await page.wait_for_load_state('networkidle', timeout=timeout)
+        # Handle relative URLs
+        full_url = urljoin(base_url, url.strip())
         
-        # Additional check for document ready state
-        await page.wait_for_function('document.readyState === "complete"', timeout=timeout)
+        # Parse and clean URL
+        parsed = urlparse(full_url)
         
-        # Wait for any jQuery AJAX calls to complete if jQuery is present
-        try:
-            await page.wait_for_function(
-                'typeof jQuery === "undefined" || jQuery.active === 0',
-                timeout=5000
-            )
-        except:
-            pass  # jQuery might not be present, which is fine
-        
-        return True
+        # Remove fragment
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            clean_url += f"?{parsed.query}"
+            
+        return clean_url
     except Exception as e:
-        logger.warning(f"Timeout waiting for page to load: {e}")
+        logger.warning(f"Could not normalize URL {url}: {e}")
+        return None
+
+def is_same_domain(url: str, domain_url: str) -> bool:
+    """Check if URL belongs to the same domain."""
+    try:
+        url_domain = urlparse(url).netloc.lower()
+        base_domain = urlparse(domain_url).netloc.lower()
+        return url_domain == base_domain
+    except Exception:
         return False
 
-async def get_links(domain_url, url_accept=lambda _: True):
-    """
-    Extract all unique links from the given domain using Playwright.
-
-    Args:
-        domain_url (str): The starting URL of the domain to extract links from.
-        url_accept (callable, optional): A callback for accepting URLs
-
-    Yields:
-        str: Extracted URLs from the domain.
-    """
+async def get_links(domain_url, url_accept=lambda _: True, page_pool: PagePool = None):
     if domain_url[-1] != "/":
         domain_url += "/"
-    
+
     robots_path = domain_url + "robots.txt"
     disallowed_urls = get_disallowed_urls(robots_path)
     logger.info(f"Disallowed URLs: {disallowed_urls}")
@@ -109,71 +81,95 @@ async def get_links(domain_url, url_accept=lambda _: True):
         logger.info("Domain URL is disallowed by robots.txt")
         return
 
-    playwright, browser, context = await setup_playwright_browser()
-    page = await context.new_page()
-    
+    internal_page_pool = False
+
+    if page_pool is None:
+        page_pool = PagePool()
+        await page_pool.__aenter__()  # manually enter context
+        internal_page_pool = True
+
+    page = await page_pool.acquire()
+
     try:
         visited = set(disallowed_urls)
         url_dq = deque([domain_url])
 
         while url_dq:
             current_batch_size = len(url_dq)
-            
+
             for _ in range(current_batch_size):
                 url_node = url_dq.popleft()
-                
+                if url_node in visited:
+                    continue
+
+                visited.add(url_node)
+
                 try:
                     logger.info(f"Visiting: {url_node}")
-                    
-                    # Navigate to the page
-                    response = await page.goto(url_node, timeout=30000)
-                    
+
+                    # Navigate to page with Playwright
+                    response = await page.goto(url_node, wait_until="domcontentloaded", timeout=30000)
                     if not response or response.status >= 400:
                         logger.warning(f"Failed to load page: {url_node} (Status: {response.status if response else 'No response'})")
                         continue
-                    
-                    # Wait for page to fully load
-                    if not await wait_for_page_load(page):
-                        logger.warning(f"Timeout for page: {url_node}")
-                        continue
 
-                    # Extract all href attributes from anchor tags
-                    hrefs = await page.evaluate('''
-                        () => {
-                            const links = Array.from(document.querySelectorAll('a[href]'));
-                            return links.map(link => link.href).filter(href => href && href.trim());
-                        }
-                    ''')
+                    # Get HTML content from Playwright
+                    html_content = await page.content()
                     
+                    # Parse with BeautifulSoup
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # Extract all links using BeautifulSoup
+                    link_elements = soup.find_all('a', href=True)
+                    hrefs = []
+                    
+                    for link in link_elements:
+                        href = link.get('href')
+                        if href:
+                            # Normalize the URL
+                            normalized_href = normalize_url(href, url_node)
+                            if normalized_href:
+                                hrefs.append(normalized_href)
+
                     logger.info(f"Found {len(hrefs)} links on {url_node}")
-                    
+
                     for href in hrefs:
                         if not href or href in visited:
                             continue
-                        
-                        visited.add(href)
-                        
-                        if not url_accept(href):
+
+                        # Only process links from the same domain
+                        if not is_same_domain(href, domain_url):
+                            logger.debug(f"Skipping external link: {href}")
                             continue
-                        
+
+                        # Check if URL is accepted by the filter
+                        if not url_accept(href):
+                            logger.debug(f"URL rejected by filter: {href}")
+                            continue
+
+                        # Add to queue for further crawling
                         url_dq.append(href)
+                        
+                        # Yield the accepted link
                         yield href
 
                 except Exception as e:
                     logger.error(f"Error processing {url_node}: {e}")
                     continue
-    
+
+                # Optional: Add delay between requests to be respectful
+                await asyncio.sleep(0.1)
+
     finally:
-        await page.close()
-        await context.close()
-        await browser.close()
-        await playwright.stop()
+        await page_pool.release(page)
+        if internal_page_pool:
+            await page_pool.__aexit__(None, None, None)
 
 if __name__ == "__main__":
     async def main():
         """Main function to demonstrate the web scraper."""
         try:
-            domain_url = "https://fcim.utm.md/"
+            domain_url = "https://accesimobil.md/"
             base_domain = urlparse(domain_url).netloc
             logger.info(f"Base domain: {base_domain}")
 
@@ -193,13 +189,7 @@ if __name__ == "__main__":
             link_count = 0
             async for link in get_links(domain_url, url_accept_strategy):
                 print(f"Found link: {link}")
-                link_count += 1
                 
-                # Optional: Add a limit to prevent infinite crawling
-                if link_count >= 100:  # Adjust as needed
-                    logger.info("Reached link limit, stopping...")
-                    break
-            
             logger.info(f"Total links found: {link_count}")
             
         except Exception as e:
